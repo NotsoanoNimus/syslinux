@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 
+int gets(char *, int max_len, const char *prompt, int is_hidden);
 int putchar(int);
 int puts(const char *);
 int vprintf(const char *, va_list ap);

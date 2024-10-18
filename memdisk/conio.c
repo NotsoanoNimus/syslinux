@@ -20,6 +20,73 @@
 #include "memdisk.h"
 #include "conio.h"
 
+
+
+/* Get a string from the user, placed into the 'to' buffer. */
+int gets(char *to, int max_len, const char *prompt, int is_hidden)
+{
+	volatile char *scroll;
+	char read;
+    com32sys_t regs;
+    com32sys_t out_regs;
+
+	scroll = to;
+
+	do {
+		if (NULL != prompt) {
+			putchar('\r');
+			puts(prompt);
+
+			if (is_hidden) {
+				for (int i = 0; i < (scroll - to); ++i) putchar('*');
+				for (int i = (scroll - to); i < max_len; ++i) putchar(' ');
+			} else {
+				puts(to);
+			}
+		}
+
+		/* INT 16h, option 0x10 - Block and accept a character input. */
+		/* Register byte AL holds the read character. We don't care about the Scan Code (AH). */
+    	memset(&regs, 0, sizeof(regs));
+    	memset(&out_regs, 0, sizeof(regs));
+
+		regs.eax.w[0] = 0x0000;
+		intcall(0x16, &regs, &out_regs);
+
+		read = (out_regs.eax.w[0] & 0x00FF);
+
+		if ('\n' == read || '\r' == read) {
+			puts("\r\n");
+			break;
+		}
+
+		/* Backspace. */
+		if (0x08 == read) {
+			*scroll = '\0';
+
+			if (scroll > to) --scroll;
+
+			continue;
+		}
+
+		/* Skip invalid (non-printable) characters. */
+		if (read <= 0x1F || read >= 0x7F) continue;
+
+		/* Any other valid printable character. Just make sure it doesn't overflow. */
+		if (0x00 == read || (scroll - to) >= max_len) continue;
+
+		*scroll = read;
+		++scroll;
+	} while (true);
+
+	/* Enforce null termination of the string. */
+	*(scroll + 1) = '\0';
+
+	/* Return read string's length. */
+	return (scroll - to);
+}
+
+
 int putchar(int ch)
 {
     com32sys_t regs;
