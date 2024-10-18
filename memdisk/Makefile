@@ -41,7 +41,8 @@ OBJS32   = start32.o setup.o msetup.o e820func.o conio.o memcpy.o memset.o \
 	   memmove.o unzip.o dskprobe.o eltorito.o \
 	   ctypes.o strntoumax.o strtoull.o suffix_number.o \
 	   memdisk_chs_512.o memdisk_edd_512.o \
-	   memdisk_iso_512.o memdisk_iso_2048.o
+	   memdisk_iso_512.o memdisk_iso_2048.o \
+	   aes.o sha256.o mbr_mftah.o
 
 CSRC     = setup.c msetup.c e820func.c conio.c unzip.c dskprobe.c eltorito.c \
 	   ctypes.c strntoumax.c strtoull.c suffix_number.c
