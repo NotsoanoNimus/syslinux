@@ -59,7 +59,7 @@ int main(void)
 	    putchar('\n');
 	    printf("%016llx %016llx %d <-\n", start, len, type);
 	    putchar('\n');
-	    insertrange(start, len, type);
+	    e820_insert_range(start, len, type);
 	    printranges();
 	}
     }
@@ -73,7 +73,7 @@ int main(void)
     putchar('\n');
 
     /* Now, steal a chunk (2K) of DOS memory and make sure it registered OK */
-    insertrange(dos_mem - 2048, 2048, 2, 1);	/* Type 2 = reserved */
+    e820_insert_range(dos_mem - 2048, 2048, 2);	/* Type 2 = reserved */
 
     printranges();
     parse_mem();
