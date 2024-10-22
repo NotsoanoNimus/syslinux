@@ -42,10 +42,11 @@ OBJS32   = start32.o setup.o msetup.o e820func.o conio.o memcpy.o memset.o \
 	   ctypes.o strntoumax.o strtoull.o suffix_number.o \
 	   memdisk_chs_512.o memdisk_edd_512.o \
 	   memdisk_iso_512.o memdisk_iso_2048.o \
-	   aes.o sha256.o mbr_mftah.o
+	   acpi.o aes.o sha256.o mbr_mftah.o \
+	   Ramdisk.aml.o
 
 CSRC     = setup.c msetup.c e820func.c conio.c unzip.c dskprobe.c eltorito.c \
-	   ctypes.c strntoumax.c strtoull.c suffix_number.c
+	   ctypes.c strntoumax.c strtoull.c suffix_number.c $(SRC)/Ramdisk.aml.c
 SSRC     = start32.S memcpy.S memset.S memmove.S
 NASMSRC  = memdisk_chs_512.asm memdisk_edd_512.asm \
 	   memdisk_iso_512.asm memdisk_iso_2048.asm \
@@ -57,12 +58,25 @@ all: memdisk # e820test
 tidy dist:
 	rm -f *.o *.s *.tmp *.o16 *.s16 *.bin *.lst *.elf e820test .*.d
 	rm -f *.map
+	-rm -f Ramdisk.aml.*
 
 clean: tidy
 
 # spotless also removes the product binary
 spotless: clean
 	rm -f memdisk .depend
+
+# The resulting C file will contain a byte array definition (u-char)
+#   for 'Ramdisk_aml' and a 'Ramdisk_aml_len'. These can then be
+#	referenced in other files as 'extern'.
+# NOTE: `xxd -i [FILE]` generated dynamic names, hence the complexity here.
+$(SRC)/Ramdisk.aml.c: $(SRC)/Ramdisk.asl
+	iasl $(SRC)/Ramdisk.asl
+	echo "unsigned char Ramdisk_aml[] = {" >$(SRC)/Ramdisk.aml.c
+	cat $(SRC)/Ramdisk.aml | xxd -i >>$(SRC)/Ramdisk.aml.c
+	echo -ne "};\nunsigned int Ramdisk_aml_len = " >>$(SRC)/Ramdisk.aml.c
+	wc -c $(SRC)/Ramdisk.aml | cut -d' ' -f1 | tr -d '\n' >>$(SRC)/Ramdisk.aml.c
+	echo ";" >>$(SRC)/Ramdisk.aml.c
 
 memdisk16.o: memdisk16.asm
 
