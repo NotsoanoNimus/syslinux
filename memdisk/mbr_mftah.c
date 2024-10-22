@@ -16,13 +16,6 @@ static const char *const MftahPayloadSignature     = MFTAH_PAYLOAD_SIGNATURE;
 #define MIN(x,y) \
     (((x) <= (y)) ? (x) : (y))
 
-#define MEMDUMP(ptr, len) \
-        printf("MEMORY DUMP:\n"); \
-        for (int i = 0; i < (len); ++i) { \
-            printf("%02x%c", *((uint8_t *)(ptr)+i), !((i+1) % 16) ? '\n' : ' '); \
-        } \
-        if ((len) % 16) putchar('\n');
-
 
 
 /* Create a pseudo-heap... This is a trashy but it's cheap and it works.

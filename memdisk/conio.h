@@ -23,6 +23,15 @@
 #include <stddef.h>
 #include <stdarg.h>
 
+#define MEMDUMP(ptr, len) \
+    puts("MEMORY DUMP:\n"); \
+    for (int i = 0; i < (len); ++i) { \
+        printf("%02x%c", *((uint8_t *)(ptr)+i), !((i+1) % 16) ? '\n' : ' '); \
+    } \
+    if ((len) % 16) { putchar('\n'); }
+
+
+
 int gets(char *, int max_len, const char *prompt, int is_hidden);
 int putchar(int);
 int puts(const char *);
@@ -30,5 +39,7 @@ int vprintf(const char *, va_list ap);
 int printf(const char *, ...);
 void __attribute__((noreturn)) die(const char *, ...);
 unsigned int atou(const char *);
+
+
 
 #endif
