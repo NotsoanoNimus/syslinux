@@ -18,6 +18,7 @@
 #include <suffix_number.h>
 #include <version.h>
 
+#include "acpi/acpi.h"
 #include "bda.h"
 #include "dskprobe.h"
 #include "e820.h"
@@ -27,14 +28,6 @@
 
 #include "mbr_mftah.h"
 
-
-
-#define MEMDUMP(ptr, len) \
-        printf("MEMORY DUMP:\n"); \
-        for (int i = 0; i < (len); ++i) { \
-            printf("%02x%c", *((uint8_t *)(ptr)+i), !((i+1) % 16) ? '\n' : ' '); \
-        } \
-        if ((len) % 16) putchar('\n');
 
 
 /* Not my favorite, but I added the `-inline` suffix to ensure any
@@ -56,6 +49,12 @@ extern const char _binary_memdisk_iso_2048_bin_start[];
 extern const char _binary_memdisk_iso_2048_bin_end[];
 extern const char _binary_memdisk_iso_2048_bin_size[];
 
+/* Provided dynamically during build-time by the compilation of 'Ramdisk.asl'. */
+extern unsigned char Ramdisk_aml[];
+extern unsigned int Ramdisk_aml_len;
+
+extern const char _end[];		/* Symbol signalling end of data */
+
 /* Pull in structures common to MEMDISK and MDISKCHK.COM */
 #include "mstructs.h"
 
@@ -76,6 +75,20 @@ struct edd_dsk_pkt {
 extern void eltorito_dump(uint32_t);
 #endif
 
+static
+void
+pause(const char *message)
+{
+    com32sys_t regs;
+
+    puts(message);
+
+    memset(&regs, 0, sizeof regs);
+    regs.eax.w[0] = 0;
+    intcall(0x16, &regs, NULL);
+}
+
+
 /*
  * Routine to seek for a command-line item and return a pointer
  * to the data portion, if present
@@ -93,40 +106,36 @@ static const char *getcmditem(const char *what)
     int match = 0;
 
     for (p = shdr->cmdline; *p; p++) {
-    switch (match) {
-    case 0:		/* Ground state */
-        if (*p == ' ')
-        break;
+        switch (match) {
+        case 0:   /* Ground state */
+            if (*p == ' ') break;
 
-        wp = what;
-        match = 1;
-        /* Fall through */
+            wp = what;
+            match = 1;
+            /* Fall through */
 
-    case 1:		/* Matching */
-        if (*wp == '\0') {
-        if (*p == '=')
-            return p + 1;
-        else if (*p == ' ')
-            return CMD_BOOL;
-        else {
-            match = 2;
+        case 1:   /* Matching */
+            if (*wp == '\0') {
+                if (*p == '=')
+                    return p + 1;
+                else if (*p == ' ')
+                    return CMD_BOOL;
+                else {
+                    match = 2;
+                    break;
+                }
+            }
+            if (*p != *wp++) match = 2;
+            break;
+
+        case 2:   /* Mismatch, skip rest of option */
+            if (*p == ' ') match = 0;   /* Next option */
             break;
         }
-        }
-        if (*p != *wp++)
-        match = 2;
-        break;
-
-    case 2:		/* Mismatch, skip rest of option */
-        if (*p == ' ')
-        match = 0;	/* Next option */
-        break;
-    }
     }
 
     /* Check for matching string at end of line */
-    if (match == 1 && *wp == '\0')
-    return CMD_BOOL;
+    if (match == 1 && *wp == '\0') return CMD_BOOL;
 
     return CMD_NOTFOUND;
 }
@@ -135,8 +144,6 @@ static const char *getcmditem(const char *what)
  * Check to see if this is a gzip image
  */
 #define UNZIP_ALIGN 512
-
-extern const char _end[];		/* Symbol signalling end of data */
 
 void unzip_if_needed(uint32_t * where_p, uint32_t * size_p)
 {
@@ -150,14 +157,9 @@ void unzip_if_needed(uint32_t * where_p, uint32_t * size_p)
     int i, okmem;
 
     /* Is it a gzip image? */
-    if (check_zip((void *)where, size, &zbytes, &gzdatasize,
-          &orig_crc, &offset) == 0) {
+    if (check_zip((void *)where, size, &zbytes, &gzdatasize, &orig_crc, &offset) != 0) return;
 
     if (offset + zbytes > size) {
-        /*
-         * Assertion failure; check_zip is supposed to guarantee this
-         * never happens.
-         */
         die("internal error: check_zip returned nonsense\n");
     }
 
@@ -173,62 +175,49 @@ void unzip_if_needed(uint32_t * where_p, uint32_t * size_p)
          */
 
         /* Must be memory */
-        if (ranges[i].type != 1)
-        continue;
+        if (ranges[i].type != 1) continue;
 
         /* Range start */
-        if (ranges[i].start >= 0xFFFFFFFF)
-        continue;
+        if (ranges[i].start >= 0xFFFFFFFF) continue;
 
         startrange = (uint32_t) ranges[i].start;
 
         /* Range end (0 for end means 2^64) */
-        endrange = ((ranges[i + 1].start >= 0xFFFFFFFF ||
-             ranges[i + 1].start == 0)
-            ? 0xFFFFFFFF : (uint32_t) ranges[i + 1].start);
+        endrange = (
+            (ranges[i + 1].start >= 0xFFFFFFFF || ranges[i + 1].start == 0)
+                ? 0xFFFFFFFF
+                : (uint32_t) ranges[i + 1].start
+        );
 
         /* Make sure we don't overwrite ourselves */
-        if (startrange < (uint32_t) _end)
-        startrange = (uint32_t) _end;
+        if (startrange < (uint32_t) _end) {
+            startrange = (uint32_t) _end;
+        }
 
         /* Allow for alignment */
-        startrange =
-        (ranges[i].start + (UNZIP_ALIGN - 1)) & ~(UNZIP_ALIGN - 1);
+        startrange = (ranges[i].start + (UNZIP_ALIGN - 1)) & ~(UNZIP_ALIGN - 1);
 
         /* In case we just killed the whole range... */
-        if (startrange >= endrange)
-        continue;
+        if (startrange >= endrange) continue;
 
-        /*
-         * Must be large enough... don't rely on gzwhere for this
-         * (wraparound)
-         */
-        if (endrange - startrange < gzdatasize)
-        continue;
+        /* Must be large enough... don't rely on gzwhere for this (wraparound) */
+        if (endrange - startrange < gzdatasize) continue;
 
-        /*
-         * This is where the gz image would be put if we put it in this
-         * range...
-         */
+        /* This is where the gz image would be put if we put it in this range... */
         gzwhere = (endrange - gzdatasize) & ~(UNZIP_ALIGN - 1);
 
         /* Cast to uint64_t just in case we're flush with the top byte */
         if ((uint64_t) where + size >= gzwhere && where < endrange) {
-        /*
-         * Need to move source data to avoid compressed/uncompressed
-         * overlap
-         */
-        uint32_t newwhere;
+            /* Need to move source data to avoid compressed/uncompressed overlap */
+            uint32_t newwhere;
 
-        if (gzwhere - startrange < size)
-            continue;	/* Can't fit both old and new */
+            if (gzwhere - startrange < size) continue;   /* Can't fit both old and new */
 
-        newwhere = (gzwhere - size) & ~(UNZIP_ALIGN - 1);
-        printf("Moving compressed data from 0x%08x to 0x%08x\n",
-               where, newwhere);
+            newwhere = (gzwhere - size) & ~(UNZIP_ALIGN - 1);
 
-        memmove((void *)newwhere, (void *)where, size);
-        where = newwhere;
+            printf("Moving compressed data from 0x%08x to 0x%08x\n", where, newwhere);
+            memmove((void *)newwhere, (void *)where, size);
+            where = newwhere;
         }
 
         target = gzwhere;
@@ -236,17 +225,17 @@ void unzip_if_needed(uint32_t * where_p, uint32_t * size_p)
         break;
     }
 
-    if (!okmem)
-        die("Not enough memory to decompress image (need 0x%08x bytes)\n",
-        gzdatasize);
+    if (!okmem) {
+        die("Not enough memory to decompress image (need 0x%08x bytes)\n", gzdatasize);
+    }
 
-    printf("gzip image: decompressed addr 0x%08x, len 0x%08x: ",
-           target, gzdatasize);
+    printf("gzip image: decompressed addr 0x%08x, len 0x%08x: ", target, gzdatasize);
 
     *size_p = gzdatasize;
-    *where_p = (uint32_t) unzip((void *)(where + offset), zbytes,
-                    gzdatasize, orig_crc, (void *)target);
-    }
+    *where_p = (uint32_t)unzip(
+        (void *)(where + offset), zbytes,
+        gzdatasize, orig_crc, (void *)target
+    );
 }
 
 /*
@@ -336,8 +325,6 @@ static const struct geometry *get_disk_image_geometry(uint32_t where,
     unsigned int offset;
     int i;
     const char *p;
-
-    printf("command line: %s\n", shdr->cmdline);
 
     hd_geometry.sector_shift = 9;	/* Assume floppy/HDD at first */
 
@@ -743,22 +730,23 @@ void setmaxmem(unsigned long long restop_ull)
     struct e820range *ep;
     const int int15restype = 2;
 
-    /* insertrange() works on uint32_t */
+    /* e820_insert_range() works on uint32_t */
     restop = min(restop_ull, UINT32_MAX);
     /* printf("  setmaxmem  '%08x%08x'  => %08x\n",
     (unsigned int)(restop_ull>>32), (unsigned int)restop_ull, restop); */
 
     for (ep = ranges; ep->type != -1U; ep++) {
-    if (ep->type == 1) {	/* Only if available */
+        if (ep->type != 1) continue;   /* Only if available */
+
         if (ep->start >= restop) {
-        /* printf("  %08x -> 2\n", ep->start); */
-        ep->type = int15restype;
+            /* printf("  %08x -> 2\n", ep->start); */
+            ep->type = int15restype;
         } else if (ep[1].start > restop) {
-        /* printf("  +%08x =2; cut %08x\n", restop, ep->start); */
-        insertrange(restop, (ep[1].start - restop), int15restype);
+            /* printf("  +%08x =2; cut %08x\n", restop, ep->start); */
+            e820_insert_range(restop, (ep[1].start - restop), int15restype);
         }
     }
-    }
+
     parse_mem();
 }
 
@@ -795,8 +783,12 @@ void setup(const struct real_mode_args *rm_args_ptr)
     uint32_t boot_seg = 0;	/* Meaning 0000:7C00 */
     uint32_t boot_len = 512;	/* One sector */
     const char *p;
+    const char *cmd_mftah_key;
+    const char *error_str;
     char mftah_password[25] = {0};
     mftah_status_t MftahStatus = MFTAH_SUCCESS;
+    bool auto_boot_failed = false;
+    s_acpi acpi = {0};
 
     /* We need to copy the rm_args into their proper place */
     memcpy(&rm_args, rm_args_ptr, sizeof rm_args);
@@ -805,8 +797,9 @@ void setup(const struct real_mode_args *rm_args_ptr)
     /* Show signs of life */
     printf("%s  %s\n", memdisk_version, copyright);
 
-    if (!shdr->ramdisk_image || !shdr->ramdisk_size)
-    die("MEMDISK: No ramdisk image specified!\n");
+    if (!shdr->ramdisk_image || !shdr->ramdisk_size) {
+        die("MEMDISK: No ramdisk image specified!\n");
+    }
 
     ramdisk_image = shdr->ramdisk_image;
     ramdisk_size = shdr->ramdisk_size;
@@ -819,17 +812,44 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
     unzip_if_needed(&ramdisk_image, &ramdisk_size);
 
+    puts("\n** If you booted from portable media,\n   you can remove it now.\n\n");
+
+    /* TODO: Abstract all of this away from being directly in the `setup` method. */
     if (getcmditem(MFTAH_OPTION_NAME) != CMD_NOTFOUND) {
         if (0 != memcmp((const void *)ramdisk_image, MFTAH_MAGIC, MFTAH_MAGIC_SIGNATURE_SIZE)) {
-            die("\r\nRequested `" MFTAH_OPTION_NAME "` but MAGIC is missing.\r\nThis isn't a MFTAH payload.\r\n");
+            die("\r\nRequested `" MFTAH_OPTION_NAME "` but MAGIC is missing.\r\n   This isn't a MFTAH payload.\r\n");
         }
 
         do {
             memset(mftah_password, 0x00, sizeof(mftah_password));
-            gets(mftah_password, sizeof(mftah_password) - 1, "ENTER PASSWORD ('q' to quit):  ", true);
+
+            if (auto_boot_failed || (cmd_mftah_key = getcmditem(MFTAH_OPTION_KEY)) == CMD_NOTFOUND) {
+                gets(mftah_password, sizeof(mftah_password) - 1, "ENTER PASSWORD ('q' to quit):  ", true);
+            } else {
+                /* Extract the boot key from cmdline options. */
+                const char *scroll = cmd_mftah_key;
+
+                do { ++scroll; } while (*scroll && '\'' != *scroll);
+
+                if (cmd_mftah_key[0] != '\'' || *scroll != '\'') {
+                    die("The `%s` option must use apostrophes (') to specify a key.", MFTAH_OPTION_KEY);
+                }
+
+                if ((scroll - (cmd_mftah_key + 1)) > (sizeof(mftah_password) - 1)) {
+                    die("The `%s` option has a length limit of %u.", sizeof(mftah_password) - 1);
+                }
+
+                memcpy(mftah_password, (cmd_mftah_key + 1), (scroll - (cmd_mftah_key + 1)));
+
+                printf(
+                    "Using auto-boot MFTAH key:  `%s` (%u)\n",
+                    mftah_password,
+                    (scroll - (cmd_mftah_key + 1))
+                );
+            }
 
             if ('q' == mftah_password[0] && 1 == strlen(mftah_password)) {
-                die("MFTAH: Boot aborted..\r\n");
+                die("MFTAH: Boot aborted.\r\n");
             }
 
             MftahStatus = decrypt((void *)ramdisk_image,
@@ -838,21 +858,126 @@ void setup(const struct real_mode_args *rm_args_ptr)
                                  strlen(mftah_password));
 
             if (MFTAH_INVALID_PASSWORD == MftahStatus) {
-                printf("Invalid password.\r\n");
+                puts("Invalid password.\r\n");
+
+                if (getcmditem(MFTAH_OPTION_KEY) != CMD_NOTFOUND) {
+                    printf("\nMFTAH: Invalid boot key provided by `%s`.\n\n", MFTAH_OPTION_KEY);
+                    auto_boot_failed = true;
+                }
+
                 continue;
             } else if (MFTAH_ERROR(MftahStatus)) {
                 die("FATAL: decryption failure (%d)", MftahStatus);
             }
 
-            printf("\r\n   ok - ramdisk decrypted\r\n\r\n");
+            puts("\r\n   ok - ramdisk decrypted\r\n\r\n");
 
             /* Forcibly load the MBR of the child ramdisk and make sure to skip the payload header. */
             ramdisk_image += sizeof(mftah_payload_header_t);
             ramdisk_size -= sizeof(mftah_payload_header_t);
 
-            printf("Loaded boot sector prelude -- ");
+            puts("Loaded boot sector prelude -- ");
             MEMDUMP(ramdisk_image, 0x40);
             puts("\r\n\r\n");
+
+            if (CMD_NOTFOUND != getcmditem(MFTAH_OPTION_EPHEMERAL)) {
+                puts("\nMFTAH will not create ACPI entries.\n");
+                puts("   The ramdisk may not be available to the loaded OS!\n\n");
+            } else {
+                /* Register the ACPI NFIT table if possible. */
+                puts("Parsing system ACPI entries\n");
+                if (ACPI_FOUND != parse_acpi(&acpi)) {
+                    error_str = "Failed to parse ACPI structures";
+                    goto mftahdisk_error;
+                }
+                printf("   (RSDT %p / XSDT %p)\n", acpi.rsdt.address, acpi.xsdt.address);
+
+                puts("Updating NVDIMM Root Device entry\n");
+                uint8_t *nvdimm_root_table = do_e820_malloc(Ramdisk_aml_len, 4);
+                if (NULL == nvdimm_root_table) {
+                    error_str = "Out of memory";
+                    goto mftahdisk_error;
+                }
+
+                printf(
+                    "   Allocated ACPI SSDT NVDR entry at '0x%p' (%u)\n",
+                    nvdimm_root_table,
+                    Ramdisk_aml_len
+                );
+
+                puts("First 32 bytes of SSDT AML -- ");
+                MEMDUMP(Ramdisk_aml, 0x20);
+
+                /* memcpy the Ramdisk AML into the table and try to link it in. */
+                /* TODO: Check whether an NVDR SSDT already exists. */
+                memcpy(nvdimm_root_table, Ramdisk_aml, Ramdisk_aml_len);
+                if (ACPI_OK != insert_acpi_table(&acpi, nvdimm_root_table)) {
+                    error_str = "Could not register a new SSDT";
+                    goto mftahdisk_error;
+                }
+
+                /* Create a new NFIT table. */
+                /* TODO: Check for an existing NFIT entry and just add the SPA to its structure. */
+                puts("Registering an ACPI NFIT entry\n");
+                /* Allocate the NFIT ACPI header and a single SPA sub-structure. */
+                nfit_raw_t *nfit_table = (nfit_raw_t *)
+                    do_e820_malloc(sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t), 4);
+                if (NULL == nfit_table) {
+                    error_str = "Out of memory";
+                    goto mftahdisk_error;
+                }
+
+                /* Zero it out. */
+                memset(nfit_table, 0x00, (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t)));
+
+                /* Populate it. */
+                s_acpi_description_header_raw *nfit_raw =
+                    (s_acpi_description_header_raw *)&(nfit_table->header);
+                const char *nfit_sig = NFIT;
+                const char *oem_id      = "MFTAH ";
+                const char *oem_table   = "MFTAHNVD";
+                const char *creator     = "XMIT";
+                guid_t pdisk_guid       = NFIT_SPA_GUID_RAMDISK_VIRT_V_DISK;
+
+                memcpy(nfit_raw->signature, nfit_sig, 4);
+                nfit_raw->length = (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t));
+                nfit_raw->revision = 1;
+                memcpy(nfit_raw->oem_id, oem_id, 6);
+                memcpy(nfit_raw->oem_table_id, oem_table, 8);
+                nfit_raw->oem_revision = 0x1000;   /* Not really anything specific. */
+                memcpy(nfit_raw->creator_id, creator, 4);
+                nfit_raw->creator_revision = MFTAH_RELEASE_DATE;
+
+                /* Fill out the SPA sub-structure. */
+                nfit_structure_spa_t *spa = (nfit_structure_spa_t *)
+                    ((uintptr_t)nfit_table + sizeof(nfit_raw_t));
+                spa->header.type = NFIT_TABLE_TYPE_SPA;
+                spa->header.length = sizeof(nfit_structure_spa_t);
+                memcpy(&(spa->addr_range_type_guid), &pdisk_guid, sizeof(guid_t));
+                spa->range_base = ramdisk_image;
+                spa->range_length = ramdisk_size;
+
+                printf("NFIT entry -- ");
+                MEMDUMP(nfit_table, nfit_raw->length + 8);
+
+                /* Try to link it in. */
+                if (ACPI_OK != insert_acpi_table(&acpi, (uint8_t *)nfit_table)) {
+                    error_str = "Could not register an NFIT table";
+                    goto mftahdisk_error;
+                }
+
+                printf("NFIT entry -- ");
+                MEMDUMP(nfit_table, nfit_raw->length + 8);
+
+                /* Finally done. */
+                puts("OK - The Ramdisk is now available via ACPI!\n\n");
+                break;
+
+    mftahdisk_error:
+                printf("ERROR:  %s.\n", error_str);
+                puts("   The ramdisk might not be discoverable by the OS!\n\n");
+                pause("  Press any key to continue... ");
+            }
 
             break;
         } while (true);
@@ -860,42 +985,47 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
     geometry = get_disk_image_geometry(ramdisk_image, ramdisk_size);
 
-    if (getcmditem("edd") != CMD_NOTFOUND ||
-    getcmditem("ebios") != CMD_NOTFOUND)
-    do_edd = 1;
-    else if (getcmditem("noedd") != CMD_NOTFOUND ||
-         getcmditem("noebios") != CMD_NOTFOUND ||
-         getcmditem("cbios") != CMD_NOTFOUND)
-    do_edd = 0;
-    else
-    do_edd = (geometry->driveno & 0x80) ? 1 : 0;
+    if (
+        getcmditem("edd") != CMD_NOTFOUND ||
+        getcmditem("ebios") != CMD_NOTFOUND
+    ) {
+        do_edd = 1;
+    } else if (
+        getcmditem("noedd") != CMD_NOTFOUND ||
+        getcmditem("noebios") != CMD_NOTFOUND ||
+        getcmditem("cbios") != CMD_NOTFOUND
+    ) {
+        do_edd = 0;
+    } else {
+        do_edd = (geometry->driveno & 0x80) ? 1 : 0;
+    }
 
     if (getcmditem("iso") != CMD_NOTFOUND) {
-    do_eltorito = 1;
-    do_edd = 1;		/* Mandatory */
+        do_eltorito = 1;
+        do_edd = 1;		/* Mandatory */
     }
 
     /* Choose the appropriate installable memdisk hook */
     if (do_eltorito) {
-    if (geometry->sector_shift == 11) {
-        bin_size = (int)&_binary_memdisk_iso_2048_bin_size;
-        memdisk_hook = (char *)&_binary_memdisk_iso_2048_bin_start;
+        if (geometry->sector_shift == 11) {
+            bin_size = (int)&_binary_memdisk_iso_2048_bin_size;
+            memdisk_hook = (char *)&_binary_memdisk_iso_2048_bin_start;
+        } else {
+            bin_size = (int)&_binary_memdisk_iso_512_bin_size;
+            memdisk_hook = (char *)&_binary_memdisk_iso_512_bin_start;
+        }
     } else {
-        bin_size = (int)&_binary_memdisk_iso_512_bin_size;
-        memdisk_hook = (char *)&_binary_memdisk_iso_512_bin_start;
-    }
-    } else {
-    if (do_edd) {
-        bin_size = (int)&_binary_memdisk_edd_512_bin_size;
-        memdisk_hook = (char *)&_binary_memdisk_edd_512_bin_start;
-    } else {
-        bin_size = (int)&_binary_memdisk_chs_512_bin_size;
-        memdisk_hook = (char *)&_binary_memdisk_chs_512_bin_start;
-    }
+        if (do_edd) {
+            bin_size = (int)&_binary_memdisk_edd_512_bin_size;
+            memdisk_hook = (char *)&_binary_memdisk_edd_512_bin_start;
+        } else {
+            bin_size = (int)&_binary_memdisk_chs_512_bin_size;
+            memdisk_hook = (char *)&_binary_memdisk_chs_512_bin_start;
+        }
     }
 
     /* Reserve the ramdisk memory */
-    insertrange(ramdisk_image, ramdisk_size, 2);
+    e820_insert_range(ramdisk_image, ramdisk_size, 2);
     parse_mem();		/* Recompute variables */
 
     /* Figure out where it needs to go */
@@ -906,8 +1036,9 @@ void setup(const struct real_mode_args *rm_args_ptr)
     pptr->mdi.olddosmem = dosmem_k;
     stddosmem = dosmem_k << 10;
     /* If INT 15 E820 and INT 12 disagree, go with the most conservative */
-    if (stddosmem > dos_mem)
-    stddosmem = dos_mem;
+    if (stddosmem > dos_mem) {
+        stddosmem = dos_mem;
+    }
 
     pptr->driveno = geometry->driveno;
     pptr->drivetype = geometry->type;
@@ -1026,28 +1157,27 @@ void setup(const struct real_mode_args *rm_args_ptr)
     }
 
     if (do_eltorito) {
-    bvd = (struct edd4_bvd *)(ramdisk_image + 17 * 2048);
-    boot_cat =
-        (struct edd4_bootcat *)(ramdisk_image + bvd->boot_cat * 2048);
-    pptr->cd_pkt.type = boot_cat->initial_entry.media_type;	/* Cheat */
-    pptr->cd_pkt.driveno = geometry->driveno;
-    pptr->cd_pkt.start = boot_cat->initial_entry.load_block;
-    boot_seg = pptr->cd_pkt.load_seg = boot_cat->initial_entry.load_seg;
-    pptr->cd_pkt.sect_count = boot_cat->initial_entry.sect_count;
-    boot_len = pptr->cd_pkt.sect_count * 512;
-    pptr->cd_pkt.geom1 = (uint8_t)(pptr->cylinders) & 0xFF;
-    pptr->cd_pkt.geom2 =
-        (uint8_t)(pptr->sectors) | (uint8_t)((pptr->cylinders >> 2) & 0xC0);
-    pptr->cd_pkt.geom3 = (uint8_t)(pptr->heads);
+        bvd = (struct edd4_bvd *)(ramdisk_image + 17 * 2048);
+        boot_cat = (struct edd4_bootcat *)(ramdisk_image + bvd->boot_cat * 2048);
+        pptr->cd_pkt.type = boot_cat->initial_entry.media_type;	/* Cheat */
+        pptr->cd_pkt.driveno = geometry->driveno;
+        pptr->cd_pkt.start = boot_cat->initial_entry.load_block;
+        boot_seg = pptr->cd_pkt.load_seg = boot_cat->initial_entry.load_seg;
+        pptr->cd_pkt.sect_count = boot_cat->initial_entry.sect_count;
+        boot_len = pptr->cd_pkt.sect_count * 512;
+        pptr->cd_pkt.geom1 = (uint8_t)(pptr->cylinders) & 0xFF;
+        pptr->cd_pkt.geom2 =
+            (uint8_t)(pptr->sectors) | (uint8_t)((pptr->cylinders >> 2) & 0xC0);
+        pptr->cd_pkt.geom3 = (uint8_t)(pptr->heads);
     }
 
     if ((p = getcmditem("mem")) != CMD_NOTFOUND) {
-    setmaxmem(suffix_number(p));
+        setmaxmem(suffix_number(p));
     }
 
     /* The size is given by hptr->total_size plus the size of the E820
        map -- 12 bytes per range; we may need as many as 2 additional
-       ranges (each insertrange() can worst-case turn 1 area into 3)
+       ranges (each e820_insert_range() can worst-case turn 1 area into 3)
        plus the terminating range, over what nranges currently show. */
     total_size = hptr->total_size;	/* Actual memdisk code */
     e820_len = (nranges + 3) * sizeof(ranges[0]);
@@ -1056,37 +1186,46 @@ void setup(const struct real_mode_args *rm_args_ptr)
     total_size += cmdline_len;		/* Command line */
     stack_len = stack_needed();
     total_size += stack_len;		/* Stack */
-    printf("Code %u, meminfo %u, cmdline %u, stack %u\n",
-       hptr->total_size, e820_len, cmdline_len, stack_len);
-    printf("Total size needed = %u bytes, allocating %uK\n",
-       total_size, (total_size + 0x3ff) >> 10);
+    printf(
+        "Code %u, meminfo %u, cmdline %u, stack %u\n",
+        hptr->total_size, e820_len, cmdline_len, stack_len
+    );
+    printf(
+        "Total size needed = %u bytes, allocating %uK\n",
+        total_size, (total_size + 0x3ff) >> 10
+    );
 
-    if (total_size > dos_mem)
-    die("MEMDISK: Insufficient low memory\n");
+    if (total_size > dos_mem) {
+        die("MEMDISK: Insufficient low memory\n");
+    }
 
     driveraddr = stddosmem - total_size;
     driveraddr &= ~0x3FF;
 
-    printf("Old dos memory at 0x%05x (map says 0x%05x), loading at 0x%05x\n",
-       stddosmem, dos_mem, driveraddr);
+    printf(
+        "Old dos memory at 0x%05x (map says 0x%05x), loading at 0x%05x\n",
+        stddosmem, dos_mem, driveraddr
+    );
 
     /* Reserve this range of memory */
     wrz_16(BIOS_BASEMEM, driveraddr >> 10);
-    insertrange(driveraddr, dos_mem - driveraddr, 2);
+    e820_insert_range(driveraddr, dos_mem - driveraddr, 2);
     parse_mem();
 
     pptr->mem1mb = low_mem >> 10;
     pptr->mem16mb = high_mem >> 16;
     if (low_mem == (15 << 20)) {
-    /* lowmem maxed out */
-    uint32_t int1588mem = (high_mem >> 10) + (low_mem >> 10);
-    pptr->memint1588 = (int1588mem > 0xffff) ? 0xffff : int1588mem;
+        /* lowmem maxed out */
+        uint32_t int1588mem = (high_mem >> 10) + (low_mem >> 10);
+        pptr->memint1588 = (int1588mem > 0xffff) ? 0xffff : int1588mem;
     } else {
-    pptr->memint1588 = low_mem >> 10;
+        pptr->memint1588 = low_mem >> 10;
     }
 
-    printf("1588: 0x%04x  15E801: 0x%04x 0x%04x\n",
-       pptr->memint1588, pptr->mem1mb, pptr->mem16mb);
+    printf(
+        "1588: 0x%04x  15E801: 0x%04x 0x%04x\n",
+        pptr->memint1588, pptr->mem1mb, pptr->mem16mb
+    );
 
     driverseg = driveraddr >> 4;
     driverptr = driverseg << 16;
@@ -1102,75 +1241,77 @@ void setup(const struct real_mode_args *rm_args_ptr)
        This is necessary for the driver to be able to report end
        of list correctly. */
     while (nranges && ranges[nranges - 1].type == 0) {
-    ranges[--nranges].type = -1;
+        ranges[--nranges].type = -1U;
     }
 
     if (getcmditem("nopassany") != CMD_NOTFOUND) {
-    printf("nopassany specified - we're the only drive of any kind\n");
-    bios_drives = 0;
-    pptr->drivecnt = 0;
-    no_bpt = 1;
-    pptr->mdi.oldint13.uint32 = driverptr + hptr->iret_offs;
-    wrz_8(BIOS_EQUIP, rdz_8(BIOS_EQUIP) & ~0xc1);
-    wrz_8(BIOS_HD_COUNT, 0);
+        printf("nopassany specified - we're the only drive of any kind\n");
+        bios_drives = 0;
+        pptr->drivecnt = 0;
+        no_bpt = 1;
+        pptr->mdi.oldint13.uint32 = driverptr + hptr->iret_offs;
+        wrz_8(BIOS_EQUIP, rdz_8(BIOS_EQUIP) & ~0xc1);
+        wrz_8(BIOS_HD_COUNT, 0);
     } else if (getcmditem("nopass") != CMD_NOTFOUND) {
-    printf("nopass specified - we're the only drive\n");
-    bios_drives = 0;
-    pptr->drivecnt = 0;
-    no_bpt = 1;
-    } else {
-    /* Query drive parameters of this type */
-    memset(&regs, 0, sizeof regs);
-    regs.es = 0;
-    regs.eax.b[1] = 0x08;
-    regs.edx.b[0] = geometry->driveno & 0x80;
-    intcall(0x13, &regs, &regs);
-
-    /* Note: per suggestion from the Interrupt List, consider
-       INT 13 08 to have failed if the sector count in CL is zero. */
-    if ((regs.eflags.l & 1) || !(regs.ecx.b[0] & 0x3f)) {
-        printf("INT 13 08: Failure, assuming this is the only drive\n");
+        printf("nopass specified - we're the only drive\n");
+        bios_drives = 0;
         pptr->drivecnt = 0;
         no_bpt = 1;
     } else {
-        printf("INT 13 08: Success, count = %u, BPT = %04x:%04x\n",
-           regs.edx.b[0], regs.es, regs.edi.w[0]);
-        pptr->drivecnt = regs.edx.b[0];
-        no_bpt = !(regs.es | regs.edi.w[0]);
-    }
+        /* Query drive parameters of this type */
+        memset(&regs, 0, sizeof regs);
+        regs.es = 0;
+        regs.eax.b[1] = 0x08;
+        regs.edx.b[0] = geometry->driveno & 0x80;
+        intcall(0x13, &regs, &regs);
 
-    /* Compare what INT 13h returned with the appropriate equipment byte */
-    if (geometry->driveno & 0x80) {
-        bios_drives = rdz_8(BIOS_HD_COUNT);
-    } else {
-        uint8_t equip = rdz_8(BIOS_EQUIP);
+        /* Note: per suggestion from the Interrupt List, consider
+        INT 13 08 to have failed if the sector count in CL is zero. */
+        if ((regs.eflags.l & 1) || !(regs.ecx.b[0] & 0x3f)) {
+            printf("INT 13 08: Failure, assuming this is the only drive\n");
+            pptr->drivecnt = 0;
+            no_bpt = 1;
+        } else {
+            printf("INT 13 08: Success, count = %u, BPT = %04x:%04x\n",
+            regs.edx.b[0], regs.es, regs.edi.w[0]);
+            pptr->drivecnt = regs.edx.b[0];
+            no_bpt = !(regs.es | regs.edi.w[0]);
+        }
 
-        if (equip & 1)
-        bios_drives = (equip >> 6) + 1;
-        else
-        bios_drives = 0;
-    }
+        /* Compare what INT 13h returned with the appropriate equipment byte */
+        if (geometry->driveno & 0x80) {
+            bios_drives = rdz_8(BIOS_HD_COUNT);
+        } else {
+            uint8_t equip = rdz_8(BIOS_EQUIP);
 
-    if (pptr->drivecnt > bios_drives) {
-        printf("BIOS equipment byte says count = %d, go with that\n",
-           bios_drives);
-        pptr->drivecnt = bios_drives;
-    }
+            if (equip & 1)
+            bios_drives = (equip >> 6) + 1;
+            else
+            bios_drives = 0;
+        }
+
+        if (pptr->drivecnt > bios_drives) {
+            printf("BIOS equipment byte says count = %d, go with that\n",
+            bios_drives);
+            pptr->drivecnt = bios_drives;
+        }
     }
 
     /* Add ourselves to the drive count */
     pptr->drivecnt++;
 
     /* Discontiguous drive space.  There is no really good solution for this. */
-    if (pptr->drivecnt <= (geometry->driveno & 0x7f))
-    pptr->drivecnt = (geometry->driveno & 0x7f) + 1;
+    if (pptr->drivecnt <= (geometry->driveno & 0x7f)) {
+        pptr->drivecnt = (geometry->driveno & 0x7f) + 1;
+    }
 
     /* Probe for contiguous range of BIOS drives starting with driveno */
     pptr->driveshiftlimit = probe_drive_range(geometry->driveno) + 1;
-    if ((pptr->driveshiftlimit & 0x80) != (geometry->driveno & 0x80))
-    printf("We lost the last drive in our class of drives.\n");
-    printf("Drive probing gives drive shift limit: 0x%02x\n",
-    pptr->driveshiftlimit);
+    if ((pptr->driveshiftlimit & 0x80) != (geometry->driveno & 0x80)) {
+        printf("We lost the last drive in our class of drives.\n");
+    }
+
+    printf("Drive probing gives drive shift limit: 0x%02x\n", pptr->driveshiftlimit);
 
     /* Pointer to the command line */
     pptr->mdi.cmdline.seg_off.offset = bin_size + (nranges + 1) * sizeof(ranges[0]);
@@ -1178,17 +1319,17 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
     /* Copy driver followed by E820 table followed by command line */
     {
-    unsigned char *dpp = (unsigned char *)(driverseg << 4);
+        unsigned char *dpp = (unsigned char *)(driverseg << 4);
 
-    /* Adjust these pointers to point to the installed image */
-    /* Careful about the order here... the image isn't copied yet! */
-    pptr = (struct patch_area *)(dpp + hptr->patch_offs);
-    hptr = (struct memdisk_header *)dpp;
+        /* Adjust these pointers to point to the installed image */
+        /* Careful about the order here... the image isn't copied yet! */
+        pptr = (struct patch_area *)(dpp + hptr->patch_offs);
+        hptr = (struct memdisk_header *)dpp;
 
-    /* Actually copy to low memory */
-    dpp = mempcpy(dpp, memdisk_hook, bin_size);
-    dpp = mempcpy(dpp, ranges, (nranges + 1) * sizeof(ranges[0]));
-    dpp = mempcpy(dpp, shdr->cmdline, cmdline_len);
+        /* Actually copy to low memory */
+        dpp = mempcpy(dpp, memdisk_hook, bin_size);
+        dpp = mempcpy(dpp, ranges, (nranges + 1) * sizeof(ranges[0]));
+        dpp = mempcpy(dpp, shdr->cmdline, cmdline_len);
     }
 
     /* Note the previous INT 13h hook in the "safe hook" structure */
@@ -1199,37 +1340,38 @@ void setup(const struct real_mode_args *rm_args_ptr)
     hptr->safe_hook.mbft = (size_t)mbft;
 
     /* Update various BIOS magic data areas (gotta love this shit) */
-
     if (geometry->driveno & 0x80) {
-    /* Update BIOS hard disk count */
-    uint8_t nhd = pptr->drivecnt;
+        /* Update BIOS hard disk count */
+        uint8_t nhd = pptr->drivecnt;
 
-    if (nhd > 128)
-        nhd = 128;
+        if (nhd > 128)
+            nhd = 128;
 
-    if (!do_eltorito)
-        wrz_8(BIOS_HD_COUNT, nhd);
+        if (!do_eltorito)
+            wrz_8(BIOS_HD_COUNT, nhd);
     } else {
-    /* Update BIOS floppy disk count */
-    uint8_t equip = rdz_8(BIOS_EQUIP);
-    uint8_t nflop = pptr->drivecnt;
+        /* Update BIOS floppy disk count */
+        uint8_t equip = rdz_8(BIOS_EQUIP);
+        uint8_t nflop = pptr->drivecnt;
 
-    if (nflop > 4)		/* Limit of equipment byte */
-        nflop = 4;
+        if (nflop > 4)		/* Limit of equipment byte */
+            nflop = 4;
 
-    equip &= 0x3E;
-    if (nflop)
-        equip |= ((nflop - 1) << 6) | 0x01;
+        equip &= 0x3E;
+        if (nflop)
+            equip |= ((nflop - 1) << 6) | 0x01;
 
-    wrz_8(BIOS_EQUIP, equip);
+        wrz_8(BIOS_EQUIP, equip);
 
-    /* Install DPT pointer if this was the only floppy */
-    if (getcmditem("dpt") != CMD_NOTFOUND ||
-        ((nflop == 1 || no_bpt) && getcmditem("nodpt") == CMD_NOTFOUND)) {
-        /* Do install a replacement DPT into INT 1Eh */
-        pptr->mdi.dpt_ptr =
-        hptr->patch_offs + offsetof(struct patch_area, dpt);
-    }
+        /* Install DPT pointer if this was the only floppy */
+        if (
+            getcmditem("dpt") != CMD_NOTFOUND
+            || ((nflop == 1 || no_bpt) && getcmditem("nodpt") == CMD_NOTFOUND)
+        ) {
+            /* Do install a replacement DPT into INT 1Eh */
+            pptr->mdi.dpt_ptr =
+            hptr->patch_offs + offsetof(struct patch_area, dpt);
+        }
     }
 
     /* Complete the mBFT */
@@ -1241,26 +1383,31 @@ void setup(const struct real_mode_args *rm_args_ptr)
     mbft->acpi.checksum = -checksum_buf(mbft, mbft->acpi.length);
 
     /* Install the interrupt handlers */
-    printf("old: int13 = %08x  int15 = %08x  int1e = %08x\n",
-       rdz_32(BIOS_INT13), rdz_32(BIOS_INT15), rdz_32(BIOS_INT1E));
+    printf(
+        "old: int13 = %08x  int15 = %08x  int1e = %08x\n",
+        rdz_32(BIOS_INT13), rdz_32(BIOS_INT15), rdz_32(BIOS_INT1E)
+    );
 
     wrz_32(BIOS_INT13, driverptr + hptr->int13_offs);
     wrz_32(BIOS_INT15, driverptr + hptr->int15_offs);
-    if (pptr->mdi.dpt_ptr)
-    wrz_32(BIOS_INT1E, driverptr + pptr->mdi.dpt_ptr);
 
-    printf("new: int13 = %08x  int15 = %08x  int1e = %08x\n",
-       rdz_32(BIOS_INT13), rdz_32(BIOS_INT15), rdz_32(BIOS_INT1E));
+    if (pptr->mdi.dpt_ptr)
+        wrz_32(BIOS_INT1E, driverptr + pptr->mdi.dpt_ptr);
+
+    printf(
+        "new: int13 = %08x  int15 = %08x  int1e = %08x\n",
+        rdz_32(BIOS_INT13), rdz_32(BIOS_INT15), rdz_32(BIOS_INT1E)
+    );
 
     /* Figure out entry point */
     if (!boot_seg) {
-    boot_base = 0x7c00;
-    shdr->sssp = 0x7c00;
-    shdr->csip = 0x7c00;
+        boot_base = 0x7c00;
+        shdr->sssp = 0x7c00;
+        shdr->csip = 0x7c00;
     } else {
-    boot_base = boot_seg << 4;
-    shdr->sssp = boot_seg << 16;
-    shdr->csip = boot_seg << 16;
+        boot_base = boot_seg << 4;
+        shdr->sssp = boot_seg << 16;
+        shdr->csip = boot_seg << 16;
     }
 
     /* Relocate the real-mode code to below the stub */
@@ -1270,6 +1417,8 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
     relocate_rm_code(rm_base);
 
+    e820_dump_ranges();
+
     /* Reboot into the new "disk" */
     puts("Loading boot sector... ");
 
@@ -1278,10 +1427,7 @@ void setup(const struct real_mode_args *rm_args_ptr)
        boot_len);
 
     if (getcmditem("pause") != CMD_NOTFOUND) {
-    puts("press any key to boot... ");
-    memset(&regs, 0, sizeof regs);
-    regs.eax.w[0] = 0;
-    intcall(0x16, &regs, NULL);
+        pause("Press any key to boot... ");
     }
 
     puts("booting...\n");
