@@ -7,8 +7,6 @@
 
 
 static const char *const MftahPayloadSignature     = MFTAH_PAYLOAD_SIGNATURE;
-static const char *const MftahMagic                = MFTAH_MAGIC;
-
 
 #define POOL_SLOTS  32
 #define POOL_SIZE   4096
@@ -217,8 +215,6 @@ decrypt(void *payload,
         immutable_ref_t key,
         size_t key_length)
 {
-    mftah_status_t status = MFTAH_SUCCESS;
-
     mftah_work_order_t work_order = {0};
 
     uint8_t remainder = 0;
@@ -233,7 +229,7 @@ decrypt(void *payload,
 
     uint8_t *mixed_vectors = NULL;
 
-    mftah_status_t MftahStatus;
+    mftah_status_t MftahStatus = MFTAH_SUCCESS;
     mftah_payload_header_t *header = (mftah_payload_header_t *)payload;
     mftah_payload_header_t saved_header = {0};
 
