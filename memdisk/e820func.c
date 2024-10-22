@@ -17,91 +17,189 @@
  */
 
 #include <stdint.h>
-#ifdef TEST
-#include <string.h>
-#else
-#include "memdisk.h"		/* For memset() */
-#endif
-#include "e820.h"
 
-#define MAXRANGES	1024
-/* All of memory starts out as one range of "indeterminate" type */
+#ifdef TEST
+#   include <string.h>
+#else
+#   include "memdisk.h"
+#endif
+
+#include "e820.h"
+#include "conio.h"
+
+
+
+#define MAXRANGES   256
+
+/* Define a few static globals (kinda sucks; consider refactoring). */
 struct e820range ranges[MAXRANGES];
 int nranges;
+
+
+extern const char _end[];		/* Symbol signalling end of data */
+
 
 void e820map_init(void)
 {
     memset(ranges, 0, sizeof(ranges));
-    nranges = 1;
-    ranges[1].type = -1U;
+    nranges = 0;
+    ranges[0].type = -1U;
 }
 
-static void insertrange_at(int where, uint64_t start, uint32_t type)
+
+/* TODO! When inserting ranges directly, need to check whether it's interfering
+    with a current entry (falls within start to start+length) and adjust the length
+    properly. The difference between this and malloc is that the latter accepts a
+    return position while this one directly provides an allocation location. */
+void
+e820_insert_range(uint64_t start,
+                  uint64_t length,
+                  uint32_t type)
 {
-    int i;
+    int i, j, k;
+    uint64_t l;
 
-    for (i = nranges; i > where; i--)
-	ranges[i] = ranges[i - 1];
+    if ((nranges + 1) >= MAXRANGES) {
+        die("E820:  Out of useable ranges!");
+    }
 
-    ranges[where].start = start;
-    ranges[where].type = type;
+    if (0 == length) return;
 
-    nranges++;
-    ranges[nranges].start = 0ULL;
+    for (i = 0; i < nranges; ++i) {
+        /* Traverse the list until the current entry's start is above the request. */
+        if (0 != start && start > ranges[i].start) continue;
+
+        /* Copy all entries from `nranges` back to the current position
+            forward by one place to make room. Since the `start` position is
+            AHEAD of ranges[i].start, we only go to (i + 1) and that's what
+            gets populated below. */
+        for (j = nranges; j > (i + 1); --j) {
+            memcpy(&ranges[j], &ranges[j-1], sizeof(struct e820range));
+        }
+
+        /* Move up to where we're going to put it. */
+        ++i;
+        break;
+    }
+
+    ranges[i].start = start;
+    ranges[i].length = length;
+    ranges[i].type = type;
+
+    ++nranges;
+    ranges[nranges].start = 0;
+    ranges[nranges].length = 0;
     ranges[nranges].type = -1U;
+
+    /* Exit if there's nothing to sort (empty or only 1 range). */
+    if (nranges <= 1) return;
+
+    /* Since we can never guarantee an ordered memory mapping, we should sort it. */
+    for (k = 0; k < nranges; ++k) {
+        for (j = k+1, i = nranges, l = ranges[k].start; j < nranges; ++j) {
+            i = l > ranges[j].start ? j : i;   /* Select the minimum `start` index. */
+        }
+
+        if (i == nranges) continue;
+
+        /* Swap using the end-range index as a placeholder. */
+        memcpy(&ranges[nranges], &ranges[k], sizeof(struct e820range));   /* k -> nranges */
+        memcpy(&ranges[k], &ranges[i], sizeof(struct e820range));   /* i -> k */
+        memcpy(&ranges[i], &ranges[nranges], sizeof(struct e820range));   /* nranges(k) -> i */
+
+        /* Reset the end of the range. */
+        ranges[nranges].start = 0;
+        ranges[nranges].length = 0;
+        ranges[nranges].type = -1U;
+    }
 }
 
-void insertrange(uint64_t start, uint64_t len, uint32_t type)
+
+void
+e820_shift_bounds(uint8_t *at,
+                  uint32_t length)
 {
-    uint64_t last;
-    uint32_t oldtype;
-    int i, j;
+    /* Search the e820 range from `ranges` and extend it. */
+    for (int i = 0; i < nranges; ++i) {
+        /* Always skip very high addresses >4G. */
+        if ((uint32_t)(ranges[i].start >> 32) > 0) continue;
 
-    /* Remove this to make len == 0 mean all of memory */
-    if (len == 0)
-	return;			/* Nothing to insert */
+        uint32_t entry_end = ((uintptr_t)ranges[i].start + ranges[i].length);
 
-    last = start + len - 1;	/* May roll over */
+        /* Is the range reserved? */
+        if (
+            (uintptr_t)at >= (uint32_t)(ranges[i].start)
+            && (uintptr_t)at < entry_end
+        ) {
+            /* If it's the last range, we don't need to extend it. */
+            if ((nranges-1) == i) continue;
 
-    i = 0;
-    oldtype = -2U;
-    while (start > ranges[i].start && ranges[i].type != -1U) {
-	oldtype = ranges[i].type;
-	i++;
+            /* The range matches and this allocation already fits inside of it. */
+            if (((uintptr_t)at + length) < entry_end) return;
+
+            /* But... we can't let a resize take over another space. */
+            if (((uintptr_t)at + length) > ranges[i+1].start) continue;
+
+            /* If we get here, then the table's length seems to extend beyond the range. */
+            printf(
+                "E820: Shifting range extent from 0x%08p -> 0x%08p.\n",
+                entry_end,
+                ((uintptr_t)at + length)
+            );
+
+            ranges[i].length = ((uintptr_t)at + length) - ranges[i].start;
+
+            return;
+        }
+    }
+}
+
+
+uint8_t *
+do_e820_malloc(uint32_t length,
+               uint32_t type)
+{
+    uint32_t i, startrange, endrange;
+
+    if (!length) {
+        return NULL;
     }
 
-    /* Consider the replacement policy.  This current one is "overwrite." */
+    printf("E820: Allocating %u bytes of type %u.\n", length, type);
 
-    if (start < ranges[i].start || ranges[i].type == -1U)
-	insertrange_at(i++, start, type);
+    /* Things that call `malloc` should prefer to work in higher ranges. */
+    for (i = (nranges - 1); i > 0; --i) {
+        if (ranges[i].type != 1) continue;
 
-    while (i == 0 || last > ranges[i].start - 1) {
-	oldtype = ranges[i].type;
-	ranges[i].type = type;
-	i++;
+        endrange = (uint32_t)((uintptr_t)(ranges[i].start) + ranges[i].length);
+        if ((endrange - length) < ranges[i].start) continue;
+
+        ranges[i].length -= length;
+
+        startrange = (endrange - length);
+        e820_insert_range(startrange, length, type);
+        parse_mem();
+
+        return (uint8_t *)startrange;
     }
 
-    if (last < ranges[i].start - 1)
-	insertrange_at(i, last + 1, oldtype);
+    return NULL;
+}
 
-    /* Now the map is correct, but quite possibly not optimal.  Scan the
-       map for ranges which are redundant and remove them. */
-    i = j = 1;
-    oldtype = ranges[0].type;
-    while (i < nranges) {
-	if (ranges[i].type == oldtype) {
-	    i++;
-	} else {
-	    oldtype = ranges[i].type;
-	    if (i != j)
-		ranges[j] = ranges[i];
-	    i++;
-	    j++;
-	}
+
+void
+e820_dump_ranges()
+{
+    puts("\nDumping E820 Ranges...\n");
+
+    for (int i = 0; i < nranges; ++i) {
+        printf(
+            "e820:  %08p%08p %08p%08p %u\n",
+            (uint32_t)(ranges[i].start >> 32), (uint32_t)(ranges[i].start),
+            (uint32_t)(ranges[i].length >> 32), (uint32_t)(ranges[i].length),
+            ranges[i].type
+        );
     }
 
-    if (i != j) {
-	ranges[j] = ranges[i];	/* Termination sentinel copy */
-	nranges -= (i - j);
-    }
+    putchar('\n');
 }

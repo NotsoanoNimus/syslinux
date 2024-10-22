@@ -29,6 +29,9 @@ extern int nranges;
 extern uint32_t dos_mem, low_mem, high_mem;
 
 extern void e820map_init(void);
-extern void insertrange(uint64_t, uint64_t, uint32_t);
 extern void get_mem(void);
 extern void parse_mem(void);
+uint8_t *do_e820_malloc(uint32_t length, uint32_t type);
+void e820_shift_bounds(uint8_t *at, uint32_t length);
+void e820_dump_ranges();
+void e820_insert_range(uint64_t start, uint64_t length, uint32_t type);
