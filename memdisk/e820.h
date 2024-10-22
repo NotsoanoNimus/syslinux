@@ -21,6 +21,7 @@
 struct e820range {
     uint64_t start;
     uint32_t type;
+    uint64_t length;
 } __attribute__ ((packed));
 
 extern struct e820range ranges[];
