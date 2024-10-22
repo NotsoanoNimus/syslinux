@@ -14,7 +14,9 @@
 
 
 
-#define MFTAH_OPTION_NAME   "mftahdisk"
+#define MFTAH_OPTION_NAME       "mftahdisk"
+#define MFTAH_OPTION_KEY        "mftahkey"
+#define MFTAH_OPTION_EPHEMERAL  "mftaheph"
 
 
 mftah_status_t
