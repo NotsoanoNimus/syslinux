@@ -22,6 +22,8 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 
 #include "sha256.h"
+
+#include "memdisk.h"
 #include "conio.h"
 
 
