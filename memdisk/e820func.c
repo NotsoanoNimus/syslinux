@@ -142,7 +142,7 @@ e820_shift_bounds(uint8_t *at,
 
             /* If we get here, then the table's length seems to extend beyond the range. */
             printf(
-                "E820: Shifting range extent from 0x%08p -> 0x%08p.\n",
+                "\nE820: Shifting range extent from 0x%08p -> 0x%08p.\n",
                 entry_end,
                 ((uintptr_t)at + length)
             );
@@ -165,7 +165,7 @@ do_e820_malloc(uint32_t length,
         return NULL;
     }
 
-    printf("E820: Allocating %u bytes of type %u.\n", length, type);
+    /* printf("E820: Allocating %u bytes of type %u.\n", length, type); */
 
     /* Things that call `malloc` should prefer to work in higher ranges. */
     for (i = (nranges - 1); i > 0; --i) {
@@ -188,10 +188,8 @@ do_e820_malloc(uint32_t length,
 
 
 void
-e820_dump_ranges()
+e820_dump_ranges(void)
 {
-    puts("\nDumping E820 Ranges...\n");
-
     for (int i = 0; i < nranges; ++i) {
         printf(
             "e820:  %08p%08p %08p%08p %u\n",

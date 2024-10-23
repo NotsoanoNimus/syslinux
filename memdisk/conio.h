@@ -35,6 +35,7 @@
 int gets(char *, int max_len, const char *prompt, int is_hidden);
 int putchar(int);
 int puts(const char *);
+void pause(const char *message);
 int vprintf(const char *, va_list ap);
 int printf(const char *, ...);
 void __attribute__((noreturn)) die(const char *, ...);

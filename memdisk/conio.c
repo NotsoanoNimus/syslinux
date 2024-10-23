@@ -116,6 +116,17 @@ int puts(const char *s)
     return count;
 }
 
+void pause(const char *message)
+{
+    com32sys_t regs;
+
+    puts(message);
+
+    memset(&regs, 0, sizeof regs);
+    regs.eax.w[0] = 0;
+    intcall(0x16, &regs, NULL);
+}
+
 /*
  * Oh, it's a waste of space, but oh-so-yummy for debugging.  It's just
  * initialization code anyway, so it doesn't take up space when we're

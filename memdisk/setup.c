@@ -49,10 +49,6 @@ extern const char _binary_memdisk_iso_2048_bin_start[];
 extern const char _binary_memdisk_iso_2048_bin_end[];
 extern const char _binary_memdisk_iso_2048_bin_size[];
 
-/* Provided dynamically during build-time by the compilation of 'Ramdisk.asl'. */
-extern unsigned char Ramdisk_aml[];
-extern unsigned int Ramdisk_aml_len;
-
 extern const char _end[];		/* Symbol signalling end of data */
 
 /* Pull in structures common to MEMDISK and MDISKCHK.COM */
@@ -74,19 +70,6 @@ struct edd_dsk_pkt {
 #if DBG_ELTORITO
 extern void eltorito_dump(uint32_t);
 #endif
-
-static
-void
-pause(const char *message)
-{
-    com32sys_t regs;
-
-    puts(message);
-
-    memset(&regs, 0, sizeof regs);
-    regs.eax.w[0] = 0;
-    intcall(0x16, &regs, NULL);
-}
 
 
 /*
@@ -784,7 +767,6 @@ void setup(const struct real_mode_args *rm_args_ptr)
     uint32_t boot_len = 512;	/* One sector */
     const char *p;
     const char *cmd_mftah_key;
-    const char *error_str;
     char mftah_password[25] = {0};
     mftah_status_t MftahStatus = MFTAH_SUCCESS;
     bool auto_boot_failed = false;
@@ -814,7 +796,6 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
     puts("\n** If you booted from portable media,\n   you can remove it now.\n\n");
 
-    /* TODO: Abstract all of this away from being directly in the `setup` method. */
     if (getcmditem(MFTAH_OPTION_NAME) != CMD_NOTFOUND) {
         if (0 != memcmp((const void *)ramdisk_image, MFTAH_MAGIC, MFTAH_MAGIC_SIGNATURE_SIZE)) {
             die("\r\nRequested `" MFTAH_OPTION_NAME "` but MAGIC is missing.\r\n   This isn't a MFTAH payload.\r\n");
@@ -884,102 +865,7 @@ void setup(const struct real_mode_args *rm_args_ptr)
                 puts("\nMFTAH will not create ACPI entries.\n");
                 puts("   The ramdisk may not be available to the loaded OS!\n\n");
             } else {
-                /* Register the ACPI NFIT table if possible. */
-                puts("Parsing system ACPI entries\n");
-                if (ACPI_OK != parse_acpi(&acpi)) {
-                    error_str = "Failed to parse ACPI structures";
-                    goto mftahdisk_error;
-                }
-                printf("   (RSDT %p / XSDT %p)\n", acpi.rsdt.address, acpi.xsdt.address);
-                pause("...");
-
-                puts("Updating NVDIMM Root Device entry\n");
-                uint8_t *nvdimm_root_table = do_e820_malloc(Ramdisk_aml_len, 4);
-                if (NULL == nvdimm_root_table) {
-                    error_str = "Out of memory";
-                    goto mftahdisk_error;
-                }
-
-                printf(
-                    "   Allocated ACPI SSDT NVDR entry at '0x%p' (%u)\n",
-                    nvdimm_root_table,
-                    Ramdisk_aml_len
-                );
-
-                puts("First 32 bytes of SSDT AML -- ");
-                MEMDUMP(Ramdisk_aml, 0x20);
-
-                /* memcpy the Ramdisk AML into the table and try to link it in. */
-                /* TODO: Check whether an NVDR SSDT already exists. */
-                memcpy(nvdimm_root_table, Ramdisk_aml, Ramdisk_aml_len);
-                if (ACPI_OK != insert_acpi_table(&acpi, nvdimm_root_table)) {
-                    error_str = "Could not register a new SSDT";
-                    goto mftahdisk_error;
-                }
-
-                /* Create a new NFIT table. */
-                /* TODO: Check for an existing NFIT entry and just add the SPA to its structure. */
-                puts("Registering an ACPI NFIT entry\n");
-                /* Allocate the NFIT ACPI header and a single SPA sub-structure. */
-                nfit_raw_t *nfit_table = (nfit_raw_t *)
-                    do_e820_malloc(sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t), 4);
-                if (NULL == nfit_table) {
-                    error_str = "Out of memory";
-                    goto mftahdisk_error;
-                }
-                pause("...");
-
-                /* Zero it out. */
-                memset(nfit_table, 0x00, (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t)));
-
-                /* Populate it. */
-                s_acpi_description_header_raw *nfit_raw =
-                    (s_acpi_description_header_raw *)&(nfit_table->header);
-                const char *nfit_sig = NFIT;
-                const char *oem_id      = "MFTAH ";
-                const char *oem_table   = "MFTAHNVD";
-                const char *creator     = "XMIT";
-                guid_t pdisk_guid       = NFIT_SPA_GUID_RAMDISK_VIRT_V_DISK;
-
-                memcpy(nfit_raw->signature, nfit_sig, 4);
-                nfit_raw->length = (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t));
-                nfit_raw->revision = 1;
-                memcpy(nfit_raw->oem_id, oem_id, 6);
-                memcpy(nfit_raw->oem_table_id, oem_table, 8);
-                nfit_raw->oem_revision = 0x1000;   /* Not really anything specific. */
-                memcpy(nfit_raw->creator_id, creator, 4);
-                nfit_raw->creator_revision = MFTAH_RELEASE_DATE;
-
-                /* Fill out the SPA sub-structure. */
-                nfit_structure_spa_t *spa = (nfit_structure_spa_t *)
-                    ((uintptr_t)nfit_table + sizeof(nfit_raw_t));
-                spa->header.type = NFIT_TABLE_TYPE_SPA;
-                spa->header.length = sizeof(nfit_structure_spa_t);
-                memcpy(&(spa->addr_range_type_guid), &pdisk_guid, sizeof(guid_t));
-                spa->range_base = ramdisk_image;
-                spa->range_length = ramdisk_size;
-
-                printf("NFIT entry -- ");
-                MEMDUMP(nfit_table, nfit_raw->length + 8);
-
-                /* Try to link it in. */
-                if (ACPI_OK != insert_acpi_table(&acpi, (uint8_t *)nfit_table)) {
-                    error_str = "Could not register an NFIT table";
-                    goto mftahdisk_error;
-                }
-
-                printf("NFIT entry -- ");
-                MEMDUMP(nfit_table, nfit_raw->length + 8);
-                pause("...");
-
-                /* Finally done. */
-                puts("OK - The Ramdisk is now available via ACPI!\n\n");
-                break;
-
-    mftahdisk_error:
-                printf("ERROR:  %s.\n", error_str);
-                puts("   The ramdisk might not be discoverable by the OS!\n\n");
-                pause("  Press any key to continue... ");
+                mftah_acpi_setup(&acpi, (uint8_t *)ramdisk_image, ramdisk_size);
             }
 
             break;
@@ -1421,6 +1307,7 @@ void setup(const struct real_mode_args *rm_args_ptr)
     relocate_rm_code(rm_base);
 
     e820_dump_ranges();
+    acpi_dump(&acpi);
 
     /* Reboot into the new "disk" */
     puts("Loading boot sector... ");

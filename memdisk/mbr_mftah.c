@@ -1,12 +1,18 @@
 #include "mbr_mftah.h"
+
 #include "aes.h"
 #include "sha256.h"
 
+#include "e820.h"
 #include "conio.h"
 #include "memdisk.h"
 
 
 static const char *const MftahPayloadSignature     = MFTAH_PAYLOAD_SIGNATURE;
+
+/* Provided dynamically during build-time by the compilation of 'Ramdisk.asl'. */
+extern unsigned char Ramdisk_aml[];
+extern unsigned int Ramdisk_aml_len;
 
 #define POOL_SLOTS  32
 #define POOL_SIZE   4096
@@ -38,7 +44,7 @@ static memres_t phatpool_slots[POOL_SLOTS] = {0};
 
 static
 memres_t *
-first_unused()
+first_unused(void)
 {
     for (size_t i = 0; i < POOL_SLOTS; ++i) {
         if (phatpool_slots[i].offset || phatpool_slots[i].length) continue;
@@ -354,4 +360,127 @@ decrypt(void *payload,
     MEMDUMP(original_hmac, SIZE_OF_SHA_256_HASH);
 
     return MFTAH_SUCCESS;
+}
+
+
+void
+mftah_acpi_setup(s_acpi *acpi,
+                 uint8_t *ramdisk_start,
+                 uint32_t ramdisk_length)
+{
+    const char *error_str;
+
+    /* Register the ACPI NFIT table if possible. */
+    puts("Parsing system ACPI entries\n");
+    if (ACPI_OK != acpi_parse(acpi)) {
+        error_str = "Failed to parse ACPI structures";
+        goto mftahdisk_error;
+    }
+    printf("   (RSDT %p / XSDT %p)\n", acpi->rsdt.address, acpi->xsdt.address);
+
+    /* Only add an NVDIMM Root Device SSDT if one doesn't already exist. */
+    if (NULL == acpi->ssdt_nvdimm_root) {
+        puts("Updating NVDIMM Root Device entry\n");
+        uint8_t *nvdimm_root_table = do_e820_malloc(Ramdisk_aml_len, 4);
+        if (NULL == nvdimm_root_table) {
+            error_str = "Out of memory";
+            goto mftahdisk_error;
+        }
+
+        printf(
+            "   Allocated ACPI SSDT NVDR entry at '0x%p' (%u)\n",
+            nvdimm_root_table,
+            Ramdisk_aml_len
+        );
+
+        /* memcpy the Ramdisk AML into the table and try to link it in. */
+        memcpy(nvdimm_root_table, Ramdisk_aml, Ramdisk_aml_len);
+        if (ACPI_OK != acpi_insert_table(acpi, nvdimm_root_table)) {
+            error_str = "Could not register a new SSDT";
+            goto mftahdisk_error;
+        }
+    }
+
+    /* Allocate the NFIT ACPI header and a single SPA sub-structure. */
+    puts("Registering an ACPI NFIT entry\n");
+    nfit_raw_t *nfit_table = (nfit_raw_t *)
+        do_e820_malloc(sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t), 4);
+    if (NULL == nfit_table) {
+        error_str = "Out of memory";
+        goto mftahdisk_error;
+    }
+
+    /* Zero it out. */
+    memset(nfit_table, 0x00, (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t)));
+
+    /* Populate the SDT header. */
+    s_acpi_description_header_raw *nfit_raw =
+        (s_acpi_description_header_raw *)&(nfit_table->header);
+    const char *nfit_sig = NFIT;
+    const char *oem_id      = "MFTAH ";
+    const char *oem_table   = "MFTAHNVD";
+    const char *creator     = "XMIT";
+    guid_t pdisk_guid       = NFIT_SPA_GUID_RAMDISK_VIRT_V_DISK;
+
+    memcpy(nfit_raw->signature, nfit_sig, 4);
+    nfit_raw->length = (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t));
+    nfit_raw->revision = 1;
+    memcpy(nfit_raw->oem_id, oem_id, 6);
+    memcpy(nfit_raw->oem_table_id, oem_table, 8);
+    nfit_raw->oem_revision = 0x1000;   /* Not really anything specific. */
+    memcpy(nfit_raw->creator_id, creator, 4);
+    nfit_raw->creator_revision = MFTAH_RELEASE_DATE;
+
+    /* Fill out the SPA sub-structure. */
+    nfit_structure_spa_t *spa = (nfit_structure_spa_t *)
+        ((uintptr_t)nfit_table + sizeof(nfit_raw_t));
+    spa->header.type = NFIT_TABLE_TYPE_SPA;
+    spa->header.length = sizeof(nfit_structure_spa_t);
+    memcpy(&(spa->addr_range_type_guid), &pdisk_guid, sizeof(guid_t));
+    spa->range_base = (uint64_t)ramdisk_start;
+    spa->range_length = (uint64_t)ramdisk_length;
+
+    /* We need to see if an NFIT already exists. */
+    if (NULL != acpi->nfit) {
+        /* If so, append the SPA structure after relocating any adjacent
+            tables that might be in the way. */
+        /* This process is expensive, but worth doing. It mirrors the functionality
+            of `parse_xsdt` in that it relocates colliding tables dynamically. */
+        uintptr_t nfit_end_begin = (uintptr_t)((uintptr_t)(acpi->nfit) + acpi->nfit->length);
+        uintptr_t nfit_end_new   = (uintptr_t)(nfit_end_begin + sizeof(nfit_structure_spa_t));
+
+        for (uintptr_t p = nfit_end_begin; p < nfit_end_new; ++p) {
+            for (int i = 0; i < (sizeof(ACPI_SIGS) / sizeof(const char *)); ++i) {
+                if (0 != memcmp((void *)p, ACPI_SIGS[i], 4)) continue;
+
+                acpi_relocate_table(acpi,
+                                    (uint8_t **)&p,
+                                    (uint8_t *)nfit_end_begin,
+                                    (uint8_t *)nfit_end_new);
+            }
+        }
+
+        memcpy((void *)nfit_end_begin, spa, sizeof(nfit_structure_spa_t));
+
+        acpi->nfit->length += sizeof(nfit_structure_spa_t);
+        acpi_table_checksum(acpi->nfit);
+    } else {
+        /* If not, link the new NFIT into the ACPI hierarchy. */
+        if (ACPI_OK != acpi_insert_table(acpi, (uint8_t *)nfit_table)) {
+            error_str = "Could not register an NFIT table";
+            goto mftahdisk_error;
+        }
+    }
+
+    printf("NFIT entry -- ");
+    MEMDUMP(nfit_table, nfit_raw->length + 8);
+
+    /* Finally done. */
+    puts("OK - The Ramdisk is now available via ACPI!\n\n");
+    return;
+
+mftahdisk_error:
+    printf("ERROR:  %s.\n", error_str);
+    puts("   The ramdisk might not be discoverable by the OS!\n\n");
+    pause("  Press any key to continue... ");
 }

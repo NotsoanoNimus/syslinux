@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdarg.h>
 
+#include "acpi/acpi.h"
+
 /* Assumes 'MFTAH' is installed locally. If not, the include file can be
     fetched from https://github.com/NotsoanoNimus/MFTAH.
     This MEMDISK modification really only needs the MFTAH definitions to
@@ -26,6 +28,14 @@ decrypt(
     uint32_t alleged_payload_size,
     immutable_ref_t key,
     size_t key_length
+);
+
+
+void
+mftah_acpi_setup(
+    s_acpi *acpi,
+    uint8_t *ramdisk_start,
+    uint32_t ramdisk_length
 );
 
 

@@ -29,9 +29,9 @@ DefinitionBlock (
         Return (0x0f)
       }
 
-      // TODO: Could define a simple 'NVD' Device in this tree when an NVDR doesn't
+      // NOTE: We could define a simple 'NVD' Device in this tree when an NVDR doesn't
       //       already exist. When one does exist, we just need to update NFIT information
-      //       and add the new handle to the NVDR.
+      //       and add the new handle to the NVDR. But I think the NVDR implies an existing NFIT.
       // SEE: https://patchwork.kernel.org/project/kvm/patch/1445216059-88521-23-git-send-email-guangrong.xiao@linux.intel.com/
       //
       // Device(NVD)

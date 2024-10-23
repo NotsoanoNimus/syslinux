@@ -38,16 +38,24 @@ struct {
 s_acpi;
 
 
-int parse_acpi(s_acpi *acpi);
+int acpi_parse(s_acpi *acpi);
 
-bool parse_header(
-    s_acpi *acpi,
-    uint64_t *address
-);
+void acpi_dump(s_acpi *acpi);
 
-int insert_acpi_table(
+int acpi_insert_table(
     s_acpi *acpi,       
     uint8_t *address
+);
+
+void acpi_table_checksum(
+    s_acpi_description_header_raw *sdt
+);
+
+uint8_t *acpi_relocate_table(
+    s_acpi *acpi,
+    uint8_t **p_address,
+    uint8_t *start,
+    uint8_t *end
 );
 
 
@@ -125,7 +133,7 @@ int insert_acpi_table(
 #define XENV "XENV"
 
 
-extern const char *ACPI_SIGS[];
+extern const char *ACPI_SIGS[68];
 
 
 
