@@ -10,21 +10,30 @@
  *
  * ----------------------------------------------------------------------- */
 
-#ifndef RSDT_H
-#define RSDT_H
+#ifndef MEMDISK_ACPI_RSDT_H
+#define MEMDISK_ACPI_RSDT_H
+
 #include <inttypes.h>
 #include <stdbool.h>
 
+#include "structs.h"
+
+
+#define RSDT_MAX_ENTRIES 256
+
+
+
 enum { RSDT_TABLE_FOUND = 1};
 
-#define RSDT "RSDT"
 
-typedef struct {
-    uint8_t *address;
-    s_acpi_description_header header;
-    uint8_t *entry[255];
+typedef
+struct {
+    s_acpi_description_header_raw *address;
+    s_acpi_description_header_raw *entry[RSDT_MAX_ENTRIES - 1];
     uint8_t entry_count;
     bool valid;
 } s_rsdt;
 
-#endif
+
+
+#endif   /* MEMDISK_ACPI_RSDT_H */

@@ -10,32 +10,25 @@
  *
  * ----------------------------------------------------------------------- */
 
-#ifndef RSDP_H
-#define RSDP_H
+#ifndef MEMDISK_ACPI_RSDP_H
+#define MEMDISK_ACPI_RSDP_H
+
 #include <inttypes.h>
 #include <stdbool.h>
+
+#include "../compiler.h"
+
 
 #define RSDP_MIN_ADDRESS 0x0E0000
 #define RSDP_MAX_ADDRESS 0x0FFFFF
 
-#define RSDP "RSD PTR "
+
 
 enum { RSDP_TABLE_FOUND = 1 };
 
-typedef struct {
-    uint8_t *address;
-    uint8_t signature[8 + 1];
-    uint8_t checksum;
-    uint8_t oem_id[6 + 1];
-    uint8_t revision;
-    uint8_t *rsdt_address;
-    uint32_t length;
-    uint8_t *xsdt_address;
-    uint8_t extended_checksum;
-    bool valid;
-} s_rsdp;
 
 typedef
+MEMDISK_PACKED_PREFIX
 struct {
     uint8_t signature[8];
     uint8_t checksum;
@@ -46,8 +39,9 @@ struct {
     uint64_t xsdt_address;
     uint8_t extended_checksum;
     uint8_t reserved[3];
-} __attribute__((packed)) rsdp_raw_t;
+} MEMDISK_PACKED_POSTFIX
+rsdp_raw_t;
 
 
 
-#endif
+#endif   /* MEMDISK_ACPI_RSDP_H */

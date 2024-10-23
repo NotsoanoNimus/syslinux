@@ -886,11 +886,12 @@ void setup(const struct real_mode_args *rm_args_ptr)
             } else {
                 /* Register the ACPI NFIT table if possible. */
                 puts("Parsing system ACPI entries\n");
-                if (ACPI_FOUND != parse_acpi(&acpi)) {
+                if (ACPI_OK != parse_acpi(&acpi)) {
                     error_str = "Failed to parse ACPI structures";
                     goto mftahdisk_error;
                 }
                 printf("   (RSDT %p / XSDT %p)\n", acpi.rsdt.address, acpi.xsdt.address);
+                pause("...");
 
                 puts("Updating NVDIMM Root Device entry\n");
                 uint8_t *nvdimm_root_table = do_e820_malloc(Ramdisk_aml_len, 4);
@@ -926,6 +927,7 @@ void setup(const struct real_mode_args *rm_args_ptr)
                     error_str = "Out of memory";
                     goto mftahdisk_error;
                 }
+                pause("...");
 
                 /* Zero it out. */
                 memset(nfit_table, 0x00, (sizeof(nfit_raw_t) + sizeof(nfit_structure_spa_t)));
@@ -968,6 +970,7 @@ void setup(const struct real_mode_args *rm_args_ptr)
 
                 printf("NFIT entry -- ");
                 MEMDUMP(nfit_table, nfit_raw->length + 8);
+                pause("...");
 
                 /* Finally done. */
                 puts("OK - The Ramdisk is now available via ACPI!\n\n");

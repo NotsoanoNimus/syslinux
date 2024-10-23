@@ -26,10 +26,8 @@
 #include <stdbool.h>
 
 #include "structs.h"
+#include "../compiler.h"
 
-
-#define NFIT "NFIT"
-#define NFIT_MAX_ENTRIES 16
 
 #define NFIT_TABLE_TYPE_SPA                 0
 #define NFIT_TABLE_TYPE_REGION_MAPPING      1
@@ -44,25 +42,19 @@
 #define NFIT_TABLE_TYPE_RESERVED            8
 
 
-/* Used by the application to track an NFIT. */
-typedef
-struct {
-    uint8_t         *address;
-    uint8_t         *entry[NFIT_MAX_ENTRIES];
-    uint32_t        entry_count;
-    bool            valid;
-} s_nfit;
-
 
 /* NFIT sub-structures are defined as Type-Length-Value entries. */
 typedef
+MEMDISK_PACKED_PREFIX
 struct {
     uint16_t        type;
     uint16_t        length;
-} nfit_typelen_t;
+} MEMDISK_PACKED_POSTFIX
+nfit_typelen_t;
 
 /* Right now, we only care about SPA entry types. */
 typedef
+MEMDISK_PACKED_PREFIX
 struct {
     nfit_typelen_t  header;
     uint16_t        struct_index;
@@ -78,7 +70,8 @@ struct {
         parsing began to work properly with `libnvdimm` on Linux, so I'm going to
         leave it be. */
     /* uint64_t        location_cookie; */
-} __attribute__((packed)) nfit_structure_spa_t;
+} MEMDISK_PACKED_POSTFIX
+nfit_structure_spa_t;
 
 #define NFIT_SPA_FLAG_CONTROL_FOR_HOTSWAP       (1 << 0)
 #define NFIT_SPA_FLAG_PROXIMITY_DOMAIN_VALID    (1 << 1)

@@ -10,22 +10,30 @@
  *
  * ----------------------------------------------------------------------- */
 
-#ifndef XSDT_H
-#define XSDT_H
+#ifndef MEMDISK_ACPI_XSDT_H
+#define MEMDISK_ACPI_XSDT_H
+
 #include <inttypes.h>
 #include <stdbool.h>
 
+#include "structs.h"
+
+
+#define XSDT_MAX_ENTRIES 256
+
+
+
 enum { XSDT_TABLE_FOUND = 1 };
 
-#define XSDT "XSDT"
-#define XSDT_MAX_ENTRIES 255
 
-typedef struct {
-    uint8_t *address;
-    s_acpi_description_header header;
-    uint64_t *entry[XSDT_MAX_ENTRIES];
+typedef
+struct {
+    s_acpi_description_header_raw *address;
+    s_acpi_description_header_raw *entry[XSDT_MAX_ENTRIES - 1];
     uint8_t entry_count;
     bool valid;
 } s_xsdt;
 
-#endif
+
+
+#endif   /* MEMDISK_ACPI_XSDT_H */

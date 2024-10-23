@@ -12,39 +12,17 @@
 
 #ifndef ACPI_STRUCTS_H
 #define ACPI_STRUCTS_H
+
 #include <inttypes.h>
 #include <stdbool.h>
 
-/* This value define the real size of the acpi structure 
- * Our is bigger as we manage the \0 of strings
- * */
-#define ACPI_HEADER_SIZE 36
+#include "../compiler.h"
 
-enum { GAS_SYSTEM_MEMORY=0, GAS_SYSTEM_IO=1 };
 
-/* Generic Address Structure (GAS) Format */
-typedef struct {
-    /* address_space_id could be {GAS_SYSTEM_MEMORY | GAS_SYSTEM_IO} */
-    uint8_t address_space_id;
-    uint8_t register_bit_width;
-    uint8_t register_bit_offset;
-    uint8_t reserved;
-    uint64_t address;
-} __attribute__ ((packed)) s_gas;
 
-typedef struct {
-    uint8_t signature[4 + 1];
-    uint32_t length;
-    uint8_t revision;
-    uint8_t checksum;
-    uint8_t oem_id[6 + 1];
-    uint8_t oem_table_id[8 + 1];
-    uint32_t oem_revision;
-    uint8_t creator_id[4 + 1];
-    uint32_t creator_revision;
-} s_acpi_description_header;
-
-typedef struct {
+typedef
+MEMDISK_PACKED_PREFIX
+struct {
     uint8_t     signature[4];
     uint32_t    length;
     uint8_t     revision;
@@ -54,15 +32,20 @@ typedef struct {
     uint32_t    oem_revision;
     uint8_t     creator_id[4];
     uint32_t    creator_revision;
-} s_acpi_description_header_raw;
+} MEMDISK_PACKED_POSTFIX
+s_acpi_description_header_raw;
 
-typedef struct {          
+
+typedef
+MEMDISK_PACKED_PREFIX
+struct {          
     uint32_t    Data1;
     uint16_t    Data2;
     uint16_t    Data3;
     uint8_t     Data4[8]; 
-} guid_t;
+} MEMDISK_PACKED_POSTFIX
+guid_t;
 
 
 
-#endif
+#endif   /* ACPI_STRUCTS_H */

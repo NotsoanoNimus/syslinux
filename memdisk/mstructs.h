@@ -15,8 +15,29 @@
 
 /* These structures are common to MEMDISK and MDISKCHK.COM */
 
+#ifndef MEMDISK_MSTRUCTS_H
+#define MEMDISK_MSTRUCTS_H
+
 #include <stdint.h>
+
 #include "compiler.h"
+
+
+
+
+/* Redefining this here because of the messy dependency. */
+typedef
+struct {
+    uint8_t signature[4 + 1];
+    uint32_t length;
+    uint8_t revision;
+    uint8_t checksum;
+    uint8_t oem_id[6 + 1];
+    uint8_t oem_table_id[8 + 1];
+    uint32_t oem_revision;
+    uint8_t creator_id[4 + 1];
+    uint32_t creator_revision;
+} s_acpi_description_header;
 
 struct seg_off {
     uint16_t offset;
@@ -98,12 +119,9 @@ struct mdi {
     uint16_t dpt_ptr;
 } MEMDISK_PACKED_POSTFIX;
 
-/* Requirement for struct acpi_description_header */
-#include "../memdisk/acpi.h"
-
 MEMDISK_PACKED_PREFIX
 struct mBFT {
-    struct acpi_description_header acpi;
+    s_acpi_description_header acpi;
     uint32_t safe_hook;		/* "Safe hook" physical address */
     struct mdi mdi;
 } MEMDISK_PACKED_POSTFIX;
@@ -176,3 +194,7 @@ struct patch_area {
     struct edd_dpt edd_dpt;
     struct edd4_cd_pkt cd_pkt;	/* Only really in a memdisk_iso_* hook */
 } MEMDISK_PACKED_POSTFIX;
+
+
+
+#endif   /* MEMDISK_MSTRUCTS_H */
