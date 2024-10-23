@@ -112,6 +112,14 @@ e820_insert_range(uint64_t start,
         ranges[nranges].length = 0;
         ranges[nranges].type = -1U;
     }
+    
+    /* Finally, walk the list. If the length of one encounters the
+        start of the next, cut it. */
+    for (k = 0; k < (nranges - 1); ++k) {
+        if ((ranges[k].start + ranges[k].length) <= ranges[k+1].start) continue;
+
+        ranges[k].length = (ranges[k+1].start - ranges[k].start);
+    }
 }
 
 
@@ -170,6 +178,9 @@ do_e820_malloc(uint32_t length,
     /* Things that call `malloc` should prefer to work in higher ranges. */
     for (i = (nranges - 1); i > 0; --i) {
         if (ranges[i].type != 1) continue;
+
+        /* Do not allow high memory allocations. */
+        if ((uint32_t)(ranges[i].start >> 32)) continue;
 
         endrange = (uint32_t)((uintptr_t)(ranges[i].start) + ranges[i].length);
         if ((endrange - length) < ranges[i].start) continue;
