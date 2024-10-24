@@ -144,7 +144,7 @@ mftah_crypt_default(mftah_work_order_t *work_order,
             (uint8_t *)iv
         );
 
-        printf("   %u: Running decryption (0x%p : %lu).\n",
+        printf("   %02u: Running decryption (0x%p : %lu)\n",
             work_order->thread_index, work_order->location, work_order->length);
 
         AES_CBC_decrypt_buffer(
